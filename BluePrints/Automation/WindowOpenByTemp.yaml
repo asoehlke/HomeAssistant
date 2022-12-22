@@ -1,0 +1,143 @@
+blueprint:
+  name: Window Open by Temperature
+  description:
+    An automation blueprint that detects a window opened for too long by the temperature setting and actual temperature of a climate device.
+    
+    It reacts if the device target temperature is set to a "window open" temperature, e.g. by a window sensor or open window recognition of the climate entity.
+    
+    Additionally, it reacts if the current temperature drops below a threshold.
+
+    It then waits for the duration, the window is allowed to be open. 
+    After that it measures the room temperature and waits a recovery period, in which the temperature should rise again.
+    If the current temperature is still below both the temperatur when triggered and before the recovery period, a configurable action is performed.
+    
+    The action can e.g. be to notify with a notification, the default shows an example. 
+    begin/end_check_temp are variables that contain the temperture before and after the recovery period.
+
+    The automation is executed in single mode, so it will only be executed for one of the climate entities at a time.
+  domain: automation
+
+  input:
+    allowed_open_time:
+      name: Window maximum open time
+      description: Maximum time the window should be open.
+      default: 10
+      selector:
+        number:
+          min: 0.0
+          max: 30.0
+          unit_of_measurement: minutes
+          mode: slider
+          step: 1.0
+
+    recovery_time:
+      name: Temperature recovery time
+      description: Time during which the temperture should rise again after closing the window.
+      default: 5
+      selector:
+        number:
+          min: 0.0
+          max: 30.0
+          unit_of_measurement: minutes
+          mode: slider
+          step: 1.0
+
+    max_open_temp:
+      name: Maximum "window open" temperature setting
+      description: Temperature setting below which a climate entity is considered to be in "window open" state.
+      default: 14
+      selector:
+        number:
+          min: 0.0
+          max: 17.0
+          unit_of_measurement: °C
+          mode: slider
+          step: 1.0
+
+    min_room_temperature:
+      name: Minimum room temperture with closed window
+      description: If the room temperture falls below this value, the window is considered open.
+      default: 16
+      selector:
+        number:
+          min: 0.0
+          max: 17.0
+          unit_of_measurement: °C
+          mode: slider
+          step: 1.0
+
+    blocking_entity:
+      name: (OPTIONAL) Blocking Entity
+      description: If this entity's state is on, it will prevent the automation from running. E.g. summer mode or away mode.
+      default:
+      selector:
+        entity:
+          domain: input_boolean
+
+    climate_entity:
+      name: Climate Device (s)
+      description: The climate entities that are controlled by the temperature.
+      selector:
+        entity:
+          domain: climate
+          multiple: true
+          
+    open_action:
+      name: Open Action
+      description: Action to perform if the door/window is open for too long (e.g. send notification). begin_check_temp and end_check_temp are the temperatures at start and end of the recovery time.
+      default:
+        - service: notify.telegramfamsoe
+          data:
+            message: >-
+              Window near {{ state_attr(trigger.entity_id, 'friendly_name') }}
+              open? Temperature now: {{ end_check_temp }}, {{ recovery_time }}
+              min. ago: {{ begin_check_temp }}
+      selector:
+        action: {}
+
+mode: single
+
+variables:
+  blocking_entity: !input blocking_entity
+  allowed_open_time: !input allowed_open_time
+  recovery_time: !input recovery_time
+  max_open_temp: !input max_open_temp
+  min_room_temperature: !input min_room_temperature
+
+trigger:
+  - platform: state
+    entity_id: !input climate_entity
+    attribute: temperature
+    to: 
+  - platform: state
+    entity_id: !input climate_entity
+    attribute: current_temperature
+    to: 
+condition:
+  - condition: template
+    value_template: "{{ (blocking_entity == none) or (states[blocking_entity].state == 'off') }}"
+  # use a condition instead of the "below" criteria in the trigger for two reasons:
+  # - below does not support templates
+  # - the automation should also be triggered again, if the windows remains open after the first run.
+  - condition: template
+    value_template: "{{ trigger.to_state.attributes.current_temperature < min_room_temperature or trigger.to_state.attributes.temperature < max_open_temp }}"
+action:
+  - variables:
+      trigger_current_temp: '{{ trigger.to_state.attributes.current_temperature }}'
+      climate_id: '{{ trigger.to_state.attributes.id }}'
+  - delay:
+      minutes: "{{ allowed_open_time }}"
+  - variables:
+      begin_check_temp: '{{ state_attr(trigger.entity_id, "current_temperature") | float }}'
+  - delay: 
+      minutes: "{{ recovery_time }}"
+  - variables:
+      end_check_temp: '{{ state_attr(trigger.entity_id, "current_temperature") | float }}'
+  # Only do further actions like notifications, if the window still seems open:
+  # - Current temperature in recovery period must still have fallen.
+  # - Current temperature must be below current temperature at trigger time.
+  #   This prevents false alerts when a window sensor caused the open state for a very short time.
+  - condition: "{{ end_check_temp < begin_check_temp and end_check_temp < trigger_current_temp - 0.5 }}"     
+  - choose:
+    - conditions: '{{ open_action is defined and open_action|length > 0 }}'
+      sequence: !input open_action
