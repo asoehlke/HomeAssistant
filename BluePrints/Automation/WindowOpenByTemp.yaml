@@ -16,6 +16,7 @@ blueprint:
 
     The automation is executed in single mode, so it will only be executed for one of the climate entities at a time.
   domain: automation
+  source_url: https://github.com/asoehlke/HomeAssistant/blob/main/BluePrints/Automation/WindowOpenByTemp.yaml
 
   input:
     allowed_open_time:
